@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Vertical Plate — steady state + multi sources</title>
+
+<title>Vertical Plate — steady state + multi sources</title>
+<!-- ADD THIS LINE FOR ZIP FUNCTIONALITY -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
 
   <style>
     .app *{ box-sizing:border-box; }
@@ -51,6 +55,10 @@
     .pill{ font-size:12px; padding:2px 6px; background:#eef; border:1px solid #cde; border-radius:10px; }
     .hint{ font-size:12px; color:#555; }
   </style>
+
+
+
+
 </head>
 
 <body>
@@ -78,13 +86,29 @@
           <label for="ambientT">Ambient (°C)</label><input id="ambientT" type="number" value="20" step="1">
           <label for="nx"># cells along width</label><input id="nx" type="number" value="96" min="20" max="400">
         </div>
-        <div class="row">
-          <button id="setup">Setup Grid</button>
-          <button id="solve">Solve</button>
-          <button id="reset">Reset to Ambient</button>
-          <label class="hint"><input id="showGrid" type="checkbox" checked> Show grid</label>
-        </div>
+
+
+    <div class="row">
+  <button id="setup">Setup Grid</button>
+  <button id="solve">Solve</button>
+  <button id="reset">Reset to Ambient</button>
+  <label class="hint"><input id="showGrid" type="checkbox" checked> Show grid</label>
+  
+  <!-- ADD THESE FOUR BUTTONS HERE -->
+  <button id="exportJsonBtn" style="background: #fff3cd; border: 1px solid #ffc107; color: #856404; margin-left: 8px;">💾 JSON</button>
+  <button id="importJsonBtn" style="background: #d1ecf1; border: 1px solid #bee5eb; color: #0c5460;">📂 Import</button>
+  <button id="exportCsvBtn" style="background: #d4edda; border: 1px solid #c3e6cb; color: #155724;">📊 CSV</button>
+  <button id="exportZipBtn" style="background: #cfe2ff; border: 1px solid #b6d4fe; color: #084298;">📦 ZIP</button>
+  <!-- END OF NEW BUTTONS -->
+</div>    
+
+
+
+</div>
       </div>
+
+
+
 
       <div class="col">
         <div class="row"><strong>Drag rectangles on the canvas to add heat sources</strong></div>
@@ -411,8 +435,264 @@
     ctx.rotate(Math.PI/2);
     ctx.restore();
   }
-  </script>
+ 
+// ==================== EXPORT/IMPORT FUNCTIONS ====================
+
+  // Helper function to get formatted timestamp
+  function getTimestamp() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    return `${year}${month}${day}_${hours}${minutes}${seconds}`;
+  }
+
+  // 1. EXPORT JSON BUTTON
+  document.getElementById('exportJsonBtn').onclick = () => {
+    const data = {
+      timestamp: new Date().toISOString(),
+      moduleType: 'vertical_plate_heatsink',
+      geometry: {
+        widthM: +widthM.value,
+        heightM: +heightM.value,
+        thicknessM: +thicknessM.value,
+        material: material.value
+      },
+      simulation: {
+        ambientT: +ambientT.value,
+        nx: +nx.value,
+        showGrid: showGrid.checked
+      },
+      sources: sources.map(s => ({
+        rect: s.rect,
+        W: s.W
+      })),
+      defaultPower: +defaultW.value
+    };
+    
+    const jsonStr = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `heatsink_config_${getTimestamp()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 2. IMPORT JSON BUTTON
+  document.getElementById('importJsonBtn').onclick = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const data = JSON.parse(event.target.result);
+          
+          // Geometry
+          if (data.geometry) {
+            widthM.value = data.geometry.widthM;
+            heightM.value = data.geometry.heightM;
+            thicknessM.value = data.geometry.thicknessM;
+            material.value = data.geometry.material;
+          }
+          
+          // Simulation
+          if (data.simulation) {
+            ambientT.value = data.simulation.ambientT;
+            nx.value = data.simulation.nx;
+            showGrid.checked = data.simulation.showGrid !== undefined ? data.simulation.showGrid : true;
+          }
+          
+          // Default Power
+          if (data.defaultPower !== undefined) {
+            defaultW.value = data.defaultPower;
+          }
+          
+          // Sources
+          if (data.sources) {
+            sources = data.sources.map(s => ({
+              rect: s.rect,
+              W: s.W,
+              cells: [] // Will be recalculated on solve
+            }));
+            updateSourcesUI();
+          }
+          
+          // Rebuild grid
+          setupGrid();
+          
+          alert('Configuration loaded successfully!');
+        } catch (err) {
+          alert('Error loading JSON file: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
+  // 3. EXPORT CSV BUTTON
+  document.getElementById('exportCsvBtn').onclick = () => {
+    if (!grid || !grid.T) {
+      alert('No simulation data to export. Setup grid and solve first.');
+      return;
+    }
+    
+    const { nx, ny, dx, dy, widthM, heightM, T } = grid;
+    
+    // Create CSV header
+    let csv = 'X (m),Y (m),Temperature (°C)\n';
+    
+    // Add data rows
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const idx = j * nx + i;
+        const x = (i + 0.5) * dx;
+        const y = (j + 0.5) * dy;
+        const temp = T[idx];
+        csv += `${x.toFixed(6)},${y.toFixed(6)},${temp.toFixed(4)}\n`;
+      }
+    }
+    
+    // Download CSV
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `heatsink_temperature_${getTimestamp()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 4. EXPORT ZIP BUTTON (CSV + Images)
+  document.getElementById('exportZipBtn').onclick = async () => {
+    if (!grid || !grid.T) {
+      alert('No simulation data to export. Setup grid and solve first.');
+      return;
+    }
+    
+    if (typeof JSZip === 'undefined') {
+      alert('JSZip library not loaded. Please refresh the page.');
+      return;
+    }
+    
+    const zip = new JSZip();
+    const timestamp = getTimestamp();
+    
+    // 1. Add CSV file
+    const { nx, ny, dx, dy, widthM, heightM, T } = grid;
+    let csv = 'X (m),Y (m),Temperature (°C)\n';
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const idx = j * nx + i;
+        const x = (i + 0.5) * dx;
+        const y = (j + 0.5) * dy;
+        const temp = T[idx];
+        csv += `${x.toFixed(6)},${y.toFixed(6)},${temp.toFixed(4)}\n`;
+      }
+    }
+    zip.file(`temperature_data_${timestamp}.csv`, csv);
+    
+    // 2. Add heat map image (current canvas)
+    const heatmapDataUrl = cv.toDataURL('image/png');
+    const heatmapBase64 = heatmapDataUrl.split(',')[1];
+    zip.file(`heatmap_${timestamp}.png`, heatmapBase64, { base64: true });
+    
+    // 3. Add heat map without grid overlay
+    const gridWasChecked = showGrid.checked;
+    showGrid.checked = false;
+    draw();
+    const cleanHeatmapDataUrl = cv.toDataURL('image/png');
+    const cleanHeatmapBase64 = cleanHeatmapDataUrl.split(',')[1];
+    zip.file(`heatmap_clean_${timestamp}.png`, cleanHeatmapBase64, { base64: true });
+    
+    // Restore grid state
+    showGrid.checked = gridWasChecked;
+    draw();
+    
+    // 4. Add configuration JSON
+    const config = {
+      timestamp: new Date().toISOString(),
+      moduleType: 'vertical_plate_heatsink',
+      geometry: {
+        widthM: +widthM.value,
+        heightM: +heightM.value,
+        thicknessM: +thicknessM.value,
+        material: material.value
+      },
+      simulation: {
+        ambientT: +ambientT.value,
+        nx: +nx.value,
+        showGrid: showGrid.checked
+      },
+      results: {
+        h_convective: grid.h.toFixed(2) + ' W/m²K',
+        area_m2: (widthM * heightM).toFixed(6),
+        total_power_W: sources.reduce((s, x) => s + x.W, 0).toFixed(2),
+        avg_temp_C: avg(grid.T).toFixed(2),
+        max_temp_C: Math.max(...grid.T).toFixed(2),
+        energy_residual_percent: (energyResidual() * 100).toFixed(2)
+      },
+      sources: sources.map(s => ({
+        rect: s.rect,
+        W: s.W
+      }))
+    };
+    zip.file(`config_${timestamp}.json`, JSON.stringify(config, null, 2));
+    
+    // 5. Add README
+    const readme = `Heat Sink Simulation Export
+Generated: ${new Date().toLocaleString()}
+
+Contents:
+- temperature_data_${timestamp}.csv: Temperature field data (X, Y, Temperature)
+- heatmap_${timestamp}.png: Heat map visualization with grid
+- heatmap_clean_${timestamp}.png: Heat map visualization without grid overlay
+- config_${timestamp}.json: Complete simulation configuration and results
+
+Simulation Parameters:
+- Plate dimensions: ${widthM.value} m × ${heightM.value} m × ${thicknessM.value} m
+- Material: ${material.value}
+- Grid resolution: ${nx} × ${ny} cells
+- Ambient temperature: ${ambientT.value} °C
+- Number of heat sources: ${sources.length}
+- Total power: ${sources.reduce((s, x) => s + x.W, 0).toFixed(2)} W
+
+Results:
+- Convective coefficient h: ${grid.h.toFixed(2)} W/m²K
+- Average temperature: ${avg(grid.T).toFixed(2)} °C
+- Maximum temperature: ${Math.max(...grid.T).toFixed(2)} °C
+- Energy balance residual: ${(energyResidual() * 100).toFixed(2)}%
+`;
+    zip.file('README.txt', readme);
+    
+    // Generate and download ZIP
+    try {
+      const content = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `heatsink_export_${timestamp}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Error creating ZIP file: ' + err.message);
+    }
+  };
+
+
+ </script>
 </body>
 </html>
+
 
 
